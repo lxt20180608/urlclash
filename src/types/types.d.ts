@@ -390,3 +390,6 @@ interface RealityOptions {
   "public-key"?: string;
   "short-id"?: string;
 }
+
+
+type ClashOutputMode = "proxies" | "payload" | "none";

@@ -57,3 +57,7 @@ jobs:
             - `snippet.js`: **上传到 Cloudflare Snippets 的 Snippet 文件**
             - `frontend.html`: 配合 `snippet.js` 使用的前端文件 (也可单独使用)
             - `converter.js`: *打包后的转换器核心逻辑*
+
+            ---
+
+            部署 & 使用详见仓库 README.md
