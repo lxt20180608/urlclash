@@ -702,49 +702,34 @@ function URI_Trojan(line: string): IProxyTrojanConfig {
 }
 
 function URI_Hysteria2(line: string): IProxyHysteria2Config {
-  line = line.split(/(hysteria2|hy2):\/\//)[2];
-
-  const [, passwordRaw, server, , port, , addons = "", nameRaw] =
-    /^(.*?)@(.*?)(:(\d+))?\/?(\?(.*?))?(?:#(.*?))?$/.exec(line) || [];
-  let portNum = parseInt(`${port}`, 10);
-  if (isNaN(portNum)) {
-    portNum = 443;
-  }
-  const password = decodeURIComponent(passwordRaw);
-
-  const decodedName = trimStr(decodeURIComponent(nameRaw));
-
-  const name = decodedName ?? `Hysteria2 ${server}:${port}`;
+  const url = new URL(line.split("hysteria2://")[1].split("#")[0]);
+  const name = decodeURIComponent(line.split("#")[1] || "");
 
   const proxy: IProxyHysteria2Config = {
+    name: name.trim() || "Hysteria2",
     type: "hysteria2",
-    name,
-    server,
-    port: portNum,
-    password,
+    server: url.hostname,
+    port: parseInt(url.port) || 443,
+    password: decodeURIComponent(url.username),
   };
 
-  const params: Record<string, string> = {};
-  for (const addon of addons.split("&")) {
-    const [key, valueRaw] = addon.split("=");
-    let value = valueRaw;
-    value = decodeURIComponent(valueRaw);
-    params[key] = value;
-  }
+  // 解析可选字段
+  const params = url.searchParams;
+  if (params.has("sni")) proxy.sni = params.get("sni")!;
+  if (params.has("obfs")) proxy.obfs = params.get("obfs")!;
+  if (params.has("obfs-password"))
+    proxy["obfs-password"] = params.get("obfs-password")!;
+  if (params.has("insecure"))
+    proxy["skip-cert-verify"] = params.get("insecure") === "1";
 
-  proxy.sni = params.sni;
-  if (!proxy.sni && params.peer) {
-    proxy.sni = params.peer;
+  // 修复：解析 alpn
+  if (params.has("alpn")) {
+    const alpnStr = params.get("alpn")!;
+    proxy.alpn = alpnStr
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean);
   }
-  if (params.obfs && params.obfs !== "none") {
-    proxy.obfs = params.obfs;
-  }
-
-  proxy.ports = params.mport;
-  proxy["obfs-password"] = params["obfs-password"];
-  proxy["skip-cert-verify"] = /(TRUE)|1/i.test(params.insecure);
-  proxy.tfo = /(TRUE)|1/i.test(params.fastopen);
-  proxy.fingerprint = params.pinSHA256;
 
   return proxy;
 }
@@ -1143,42 +1128,92 @@ function URI_SOCKS(line: string): IProxySocks5Config {
   return proxy;
 }
 
-// ====================== Clash YAML 简易解析（仅用于反向）=====================
+// ====================== 完整 Clash YAML 解析（支持嵌套 + 数组 + URL 编码）=====================
 function parseClashYaml(yaml: string): any[] {
-  const lines = yaml.split("\n");
+  const lines = yaml.split('\n');
   const nodes: any[] = [];
   let current: any = null;
-  for (let line of lines) {
-    line = line.trim();
-    if (line.startsWith("- name:")) {
+  let stack: any[] = [];
+  let currentIndent = 0;
+
+  for (let rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) continue;
+
+    const indent = rawLine.length - rawLine.trimStart().length;
+    const trimmed = line.trimStart();
+
+    // 回退缩进
+    while (indent < currentIndent && stack.length > 0) {
+      current = stack.pop()!;
+      currentIndent = stack.length > 0 ? indent : 0;
+    }
+
+    // 新节点开始：- { ... }
+    if (trimmed.startsWith('- ')) {
       if (current) nodes.push(current);
-      current = { name: line.slice(8).replace(/^"(.*)"$/, "$1") };
-    } else if (current && line.includes(":")) {
-      const [k, ...v] = line.split(":");
-      const key = k.trim();
-      const val = v
-        .join(":")
-        .trim()
-        .replace(/^"(.*)"$/, "$1");
-      if (key === "reality-opts") continue; // 跳过嵌套，由后续处理
-      current[key] = isNaN(+val)
-        ? val === "true"
-          ? true
-          : val === "false"
-          ? false
-          : val
-        : +val;
-      // 处理嵌套 reality-opts
-      if (key === "public-key")
-        (current.reality = current.reality || {}),
-          (current.reality["public-key"] = val);
-      if (key === "short-id")
-        (current.reality = current.reality || {}),
-          (current.reality["short-id"] = val);
+      current = {};
+      stack = [];
+      currentIndent = indent;
+      continue; // 下一轮再处理内容
+    }
+
+    if (!current) continue;
+
+    // 处理键值对：key: value
+    if (trimmed.includes(': ')) {
+      let [rawKey, ...valParts] = trimmed.split(': ');
+      const key = rawKey.trim();
+      let rawValue = valParts.join(': ').trim();
+
+      let value: any = rawValue;
+
+      // === 1. 处理数组 [item1, item2]（含 URL 编码 %2C）===
+      if (rawValue.startsWith('[') && rawValue.endsWith(']')) {
+        const inner = rawValue.slice(1, -1);
+        if (inner.trim() === '') {
+          value = [];
+        } else {
+          value = inner
+            .split(',')
+            .map(s => decodeURIComponent(s.trim().replace(/^["']|["']$/g, '')))
+            .filter(Boolean);
+        }
+      }
+      // === 2. 处理布尔值 ===
+      else if (rawValue === 'true') {
+        value = true;
+      } else if (rawValue === 'false') {
+        value = false;
+      }
+      // === 3. 处理数字 ===
+      else if (!isNaN(+rawValue) && rawValue !== '') {
+        value = +rawValue;
+      }
+      // === 4. 处理空值或字符串 ===
+      else if (rawValue === '' || rawValue === 'null' || rawValue === '~') {
+        value = null;
+      }
+
+      // === 5. 处理嵌套对象（如 ws-opts:）===
+      if (rawLine.trimEnd().endsWith(':')) {
+        const newObj: any = {};
+        current[key] = newObj;
+        stack.push(current);
+        current = newObj;
+        currentIndent = indent + 2;
+        continue;
+      }
+
+      // 普通赋值
+      current[key] = value;
     }
   }
+
   if (current) nodes.push(current);
-  return nodes.filter((n) => n.type && n.server && n.port);
+
+  // 过滤有效节点
+  return nodes.filter(node => node && node.type && node.server && node.port);
 }
 
 // ====================== 生成 Clash 节点 =====================
@@ -1245,8 +1280,10 @@ function generateClashNode(node: any): string {
 
   // Hysteria2
   if (node.type === "hysteria2") {
-    if (node.alpn)
-      lines.push(`    alpn:\n      - ${node.alpn.join("\n      - ")}`);
+    if (node.alpn && Array.isArray(node.alpn) && node.alpn.length > 0) {
+      lines.push(`    alpn:`);
+      node.alpn.forEach((a: string) => lines.push(`      - ${a}`));
+    }
     if (node.obfs) lines.push(`    obfs: ${node.obfs}`);
     if (node["obfs-password"])
       lines.push(`    obfs-password: ${node["obfs-password"]}`);
