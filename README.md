@@ -68,6 +68,7 @@ vless://这是UUID@这是服务器:11451?type=tcp&encryption=none&flow=xtls-rprx
 1. Fork 本项目
 2. 到仓库 Settings -> Pages 启用 Pages 功能 (`Source` 选择 `GitHub Actions`)
 3. 到 Actions 启用并手动触发 `Deploy to GitHub Pages` 工作流
+4. *(可选) 到 Settings -> Pages 配置自定义域名*
 
 ## End
 

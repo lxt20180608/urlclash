@@ -52,7 +52,7 @@ jobs:
       - name: Copy index.html
         run: |
           mkdir -p dist
-          sed 's|./converter.bundle.js|/converter.bundle.js|g' src/frontend.html > dist/index.html
+          cp src/frontend.html dist/index.html
 
       # 上传到 GitHub Pages
       - name: Upload artifact
